@@ -14,6 +14,7 @@ from arsenic.http import Auth, BasicAuth
 from arsenic.subprocess import get_subprocess_impl
 from arsenic.utils import free_port
 from arsenic.webdriver import WebDriver
+from arsenic.errors import ArsenicError
 
 
 async def tasked(coro):
@@ -26,7 +27,11 @@ async def check_service_status(session: ClientSession, url: str) -> bool:
 
 
 async def subprocess_based_service(
-    cmd: List[str], service_url: str, log_file: TextIO
+    cmd: List[str],
+    service_url: str,
+    log_file: TextIO,
+    check_interval: float = 0.5,
+    timeout: float = 15,
 ) -> WebDriver:
     closers = []
     try:
@@ -36,16 +41,19 @@ async def subprocess_based_service(
         session = ClientSession()
         closers.append(session.close)
         count = 0
-        while True:
-            try:
-                if await tasked(check_service_status(session, service_url)):
-                    break
-            except:
-                # TODO: make this better
-                count += 1
-                if count > 30:
-                    raise Exception("not starting?")
-                await asyncio.sleep(0.5)
+
+        async def wait_service():
+            while True:
+                try:
+                    if await tasked(check_service_status(session, service_url)):
+                        break
+                except:
+                    await asyncio.sleep(check_interval)
+
+        try:
+            await asyncio.wait_for(wait_service(), timeout=timeout)
+        except asyncio.TimeoutError:
+            raise ArsenicError("not starting?")
         return WebDriver(Connection(session, service_url), closers)
     except:
         for closer in reversed(closers):
@@ -64,6 +72,8 @@ class Geckodriver(Service):
     log_file = attr.ib(default=sys.stdout)
     binary = attr.ib(default="geckodriver")
     version_check = attr.ib(default=True)
+    start_timeout = attr.ib(default=15)
+    start_check_interval = attr.ib(default=0.5)
 
     _version_re = re.compile(r"geckodriver (\d+\.\d+)")
 
@@ -94,6 +104,8 @@ class Geckodriver(Service):
             [self.binary, "--port", str(port)],
             f"http://localhost:{port}",
             self.log_file,
+            check_interval=self.start_check_interval,
+            timeout=self.start_timeout,
         )
 
 
@@ -101,11 +113,17 @@ class Geckodriver(Service):
 class Chromedriver(Service):
     log_file = attr.ib(default=sys.stdout)
     binary = attr.ib(default="chromedriver")
+    start_timeout = attr.ib(default=15)
+    start_check_interval = attr.ib(default=0.5)
 
     async def start(self):
         port = free_port()
         return await subprocess_based_service(
-            [self.binary, f"--port={port}"], f"http://localhost:{port}", self.log_file
+            [self.binary, f"--port={port}"],
+            f"http://localhost:{port}",
+            self.log_file,
+            check_interval=self.start_check_interval,
+            timeout=self.start_timeout,
         )
 
 
@@ -113,11 +131,17 @@ class Chromedriver(Service):
 class MSEdgeDriver(Service):
     log_file = attr.ib(default=sys.stdout)
     binary = attr.ib(default="msedgedriver")
+    start_timeout = attr.ib(default=15)
+    start_check_interval = attr.ib(default=0.5)
 
     async def start(self):
         port = free_port()
         return await subprocess_based_service(
-            [self.binary, f"--port={port}"], f"http://localhost:{port}", self.log_file
+            [self.binary, f"--port={port}"],
+            f"http://localhost:{port}",
+            self.log_file,
+            check_interval=self.start_check_interval,
+            timeout=self.start_timeout,
         )
 
 
@@ -160,6 +184,8 @@ class IEDriverServer(Service):
     log_file = attr.ib(default=sys.stdout)
     binary = attr.ib(default="IEDriverServer.exe")
     log_level = attr.ib(default="FATAL")
+    start_timeout = attr.ib(default=15)
+    start_check_interval = attr.ib(default=0.5)
 
     async def start(self):
         port = free_port()
@@ -167,4 +193,6 @@ class IEDriverServer(Service):
             [self.binary, f"/port={port}", f"/log-level={self.log_level}"],
             f"http://localhost:{port}",
             self.log_file,
+            check_interval=self.start_check_interval,
+            timeout=self.start_timeout,
         )
